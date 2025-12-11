@@ -1,0 +1,40 @@
+digraph Object_Detection_CNN {
+    rankdir=LR;
+    node [shape=box, style=rounded];
+
+    subgraph cluster_0 {
+        rank=same;
+        define_objective [label="1. Define the Objective"];
+        data_collection [label="2. Data Collection"];
+        data_annotation [label="3. Data Annotation"];
+        data_augmentation [label="4. Data Augmentation"];
+    }
+
+    subgraph cluster_1 {
+        rank=same;
+        design_architecture [label="5. Design the Model Architecture"];
+        loss_function [label="6. Loss Function"];
+        training [label="7. Training"];
+        evaluation [label="8. Evaluation"];
+    }
+
+    subgraph cluster_2 {
+        rank=same;
+        optimization [label="9. Optimization"];
+        deployment [label="10. Deployment"];
+        inference_postprocessing [label="11. Inference & Post-processing"];
+        continuous_learning [label="12. Continuous Learning & Updates"];
+    }
+
+    define_objective -> data_collection;
+    data_collection -> data_annotation;
+    data_annotation -> data_augmentation;
+    data_augmentation -> design_architecture;
+    design_architecture -> loss_function;
+    loss_function -> training;
+    training -> evaluation;
+    evaluation -> optimization;
+    optimization -> deployment;
+    deployment -> inference_postprocessing;
+    inference_postprocessing -> continuous_learning;
+}

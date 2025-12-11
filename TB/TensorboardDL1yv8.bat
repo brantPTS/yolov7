@@ -1,0 +1,1 @@
+tensorboard --port 6017 --logdir \\dl-trainer-1\D\Local\Yolo\Yv8\ultralytics\runs\detect

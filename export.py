@@ -21,6 +21,7 @@ if __name__ == '__main__':
     parser.add_argument('--weights', type=str, default='./yolor-csp-c.pt', help='weights path')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='image size')  # height, width
     parser.add_argument('--batch-size', type=int, default=1, help='batch size')
+    parser.add_argument('--onnx-only', action='store_true', help='only onnx export')
     parser.add_argument('--dynamic', action='store_true', help='dynamic ONNX axes')
     parser.add_argument('--dynamic-batch', action='store_true', help='dynamic batch onnx for tensorrt and onnx-runtime')
     parser.add_argument('--grid', action='store_true', help='export Detect() layer grid')
@@ -70,48 +71,50 @@ if __name__ == '__main__':
         model.model[-1].include_nms = True
         y = None
 
-    # TorchScript export
-    try:
-        print('\nStarting TorchScript export with torch %s...' % torch.__version__)
-        f = opt.weights.replace('.pt', '.torchscript.pt')  # filename
-        ts = torch.jit.trace(model, img, strict=False)
-        ts.save(f)
-        print('TorchScript export success, saved as %s' % f)
-    except Exception as e:
-        print('TorchScript export failure: %s' % e)
 
-    # CoreML export
-    try:
-        import coremltools as ct
+    if not opt.onnx_only:
+        # TorchScript export
+        try:
+            print('\nStarting TorchScript export with torch %s...' % torch.__version__)
+            f = opt.weights.replace('.pt', '.torchscript.pt')  # filename
+            ts = torch.jit.trace(model, img, strict=False)
+            ts.save(f)
+            print('TorchScript export success, saved as %s' % f)
+        except Exception as e:
+            print('TorchScript export failure: %s' % e)
 
-        print('\nStarting CoreML export with coremltools %s...' % ct.__version__)
-        # convert model from torchscript and apply pixel scaling as per detect.py
-        ct_model = ct.convert(ts, inputs=[ct.ImageType('image', shape=img.shape, scale=1 / 255.0, bias=[0, 0, 0])])
-        bits, mode = (8, 'kmeans_lut') if opt.int8 else (16, 'linear') if opt.fp16 else (32, None)
-        if bits < 32:
-            if sys.platform.lower() == 'darwin':  # quantization only supported on macOS
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning)  # suppress numpy==1.20 float warning
-                    ct_model = ct.models.neural_network.quantization_utils.quantize_weights(ct_model, bits, mode)
-            else:
-                print('quantization only supported on macOS, skipping...')
+        # CoreML export
+        try:
+            import coremltools as ct
 
-        f = opt.weights.replace('.pt', '.mlmodel')  # filename
-        ct_model.save(f)
-        print('CoreML export success, saved as %s' % f)
-    except Exception as e:
-        print('CoreML export failure: %s' % e)
-                     
-    # TorchScript-Lite export
-    try:
-        print('\nStarting TorchScript-Lite export with torch %s...' % torch.__version__)
-        f = opt.weights.replace('.pt', '.torchscript.ptl')  # filename
-        tsl = torch.jit.trace(model, img, strict=False)
-        tsl = optimize_for_mobile(tsl)
-        tsl._save_for_lite_interpreter(f)
-        print('TorchScript-Lite export success, saved as %s' % f)
-    except Exception as e:
-        print('TorchScript-Lite export failure: %s' % e)
+            print('\nStarting CoreML export with coremltools %s...' % ct.__version__)
+            # convert model from torchscript and apply pixel scaling as per detect.py
+            ct_model = ct.convert(ts, inputs=[ct.ImageType('image', shape=img.shape, scale=1 / 255.0, bias=[0, 0, 0])])
+            bits, mode = (8, 'kmeans_lut') if opt.int8 else (16, 'linear') if opt.fp16 else (32, None)
+            if bits < 32:
+                if sys.platform.lower() == 'darwin':  # quantization only supported on macOS
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=DeprecationWarning)  # suppress numpy==1.20 float warning
+                        ct_model = ct.models.neural_network.quantization_utils.quantize_weights(ct_model, bits, mode)
+                else:
+                    print('quantization only supported on macOS, skipping...')
+
+            f = opt.weights.replace('.pt', '.mlmodel')  # filename
+            ct_model.save(f)
+            print('CoreML export success, saved as %s' % f)
+        except Exception as e:
+            print('CoreML export failure: %s' % e)
+                        
+        # TorchScript-Lite export
+        try:
+            print('\nStarting TorchScript-Lite export with torch %s...' % torch.__version__)
+            f = opt.weights.replace('.pt', '.torchscript.ptl')  # filename
+            tsl = torch.jit.trace(model, img, strict=False)
+            tsl = optimize_for_mobile(tsl)
+            tsl._save_for_lite_interpreter(f)
+            print('TorchScript-Lite export success, saved as %s' % f)
+        except Exception as e:
+            print('TorchScript-Lite export failure: %s' % e)
 
     # ONNX export
     try:

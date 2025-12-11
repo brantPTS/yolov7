@@ -1,0 +1,1 @@
+tensorboard --port 6047  --logdir \\dl-trainer-4\D\Local\Yolo\Yv7\yolov7\runs\train

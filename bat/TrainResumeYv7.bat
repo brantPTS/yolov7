@@ -1,0 +1,1 @@
+python train.py --workers 8 --device 0 --batch-size 16 --save_period 1 --data .\data\PtsCoco_filt.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'D:\Local\Yolo\Yv7\yolov7\runs\train\yolov7\weights\best.pt' --name yolov7 --hyp data/hyp.scratch.p5.yaml
