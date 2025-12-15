@@ -22,6 +22,10 @@ from utils.google_utils import gsutil_getsize
 from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
 
+from utils.win_lin_data import generate_linux_paths_file_from_win_paths_file
+from utils.win_lin_data import get_win_paths_file_from_lin_paths_file
+
+
 # Settings
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
@@ -155,10 +159,19 @@ def check_file(file):
 
 def check_dataset(dict):
     # Download dataset if not found locally
-    val, s = dict.get('val'), dict.get('download')
+    trn, tst, val, s = dict.get('train'), dict.get('test'), dict.get('val'), dict.get('download')
+    dataFilePaths = [trn, tst, val]
     if val and len(val):
-        val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
-        if not all(x.exists() for x in val):
+        # val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
+        val = [Path(dPath).resolve() for dPath in dataFilePaths]  # val path
+
+        allDataFilesExist = all(dPath.exists() for dPath in val)
+        if not allDataFilesExist:
+            for dp in dataFilePaths:
+                generate_linux_paths_file_from_win_paths_file(get_win_paths_file_from_lin_paths_file(dp))
+
+        allDataFilesExist = all(dPath.exists() for dPath in val)
+        if not allDataFilesExist:
             print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val if not x.exists()])
             if s and len(s):  # download script
                 print('Downloading %s ...' % s)
