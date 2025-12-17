@@ -8,7 +8,7 @@ import re
 
 
 
-WIN_DRIVES_FOLDER: str = "/windrives"
+DL_DATA_FOLDER: str = "/dldata"
 
 WIN_PATHS_SUFFIX: str = ".txt"
 LIN_PATHS_SUFFIX: str = ".lin.txt"
@@ -114,7 +114,7 @@ def generate_linux_paths_file_from_win_paths_file(winPathsFile: str) -> str:
     - Ensures the input file exists
     - Output file name replaces trailing '.txt' with '.lin.txt'
     - Replaces:
-        d:  -> WIN_DRIVES_FOLDER/d
+        d:  -> DL_DATA_FOLDER
         \\  -> /
     - tries to fix common case-sensitivity issues (forces /videos/ to /Videos/, for example)
     - Writes one Linux path per line
@@ -144,7 +144,7 @@ def generate_linux_paths_file_from_win_paths_file(winPathsFile: str) -> str:
             lin_path: str = win_path
 
             # Normalize drive letter (case-insensitive)
-            lin_path = lin_path.replace("D:", f"{WIN_DRIVES_FOLDER}/d").replace("d:", f"{WIN_DRIVES_FOLDER}/d")
+            lin_path = lin_path.replace("D:", f"{DL_DATA_FOLDER}").replace("d:", f"{DL_DATA_FOLDER}")
 
             # Replace backslashes with forward slashes
             lin_path = lin_path.replace("\\", "/")

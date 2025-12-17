@@ -9,9 +9,9 @@
 # test: ./coco/test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
 
 
-train: /windrives/d/Videos/DL/Training/2025/Therm20251104/trainSubset.lin.txt
-val: /windrives/d/Videos/DL/Training/2025/Therm20251104/valSubset.lin.txt
-test: /windrives/d/Videos/DL/Training/2025/Therm20251104/testSubset.lin.txt
+train: /dldata/Videos/DL/Training/2025/Therm20251104/trainSubset.lin.txt
+val: /dldata/Videos/DL/Training/2025/Therm20251104/valSubset.lin.txt
+test: /dldata/Videos/DL/Training/2025/Therm20251104/testSubset.lin.txt
 
 
 # train: ./data/Vis20240402_pts03/trainsubsetlocaldrive.txt
