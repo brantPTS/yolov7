@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
-source /windrives/d/local/envs/ul5lin2/bin/activate
+source ~/envs/y7_1/bin/activate
 
 # export CUDA_VISIBLE_DEVICES=0
 
 python3 train.py \
-  --epochs 20 \
-  --workers 8 \
+  --epochs 300 \
+  --workers 16 \
   --device 0 \
-  --batch-size 8 \
+  --batch-size 48 \
   --save_period 5 \
   --data data/pts04Therm.lin.yaml \
   --img-size 736 960 \

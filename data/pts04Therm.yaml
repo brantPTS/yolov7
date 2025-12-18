@@ -13,6 +13,10 @@ train: /dldata/Videos/DL/Training/2025/Therm20251104/trainSubset.txt
 val: /dldata/Videos/DL/Training/2025/Therm20251104/valSubset.txt
 test: /dldata/Videos/DL/Training/2025/Therm20251104/testSubset.txt
 
+# train: D:\videos\DL\Training\2025\Vis20251105_pts04\trainsubset.txt
+# val: D:\videos\DL\Training\2025\Vis20251105_pts04\valsubset.txt
+# test: D:\videos\DL\Training\2025\Vis20251105_pts04\testsubset.txt
+
 
 # train: ./data/Vis20240402_pts03/trainsubsetlocaldrive.txt
 # val: ./data/Vis20240402_pts03/valsubsetlocaldrive.txt
