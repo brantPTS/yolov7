@@ -17,6 +17,9 @@ tqdm
 
 # Logging -------------------------------------
 tensorboard
+nvidia-ml-py
+psutil
+
 # wandb
 
 # Plotting ------------------------------------
@@ -34,7 +37,6 @@ onnx
 
 # Extras --------------------------------------
 # ipython  # interactive notebook
-# psutil  # system utilization
 # thop  # FLOPs computation
 # albumentations
 # pycocotools  # COCO mAP
