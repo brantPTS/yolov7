@@ -35,6 +35,13 @@ from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
+from utils.profiling import StepTimer, ProfilingLogRow, CSVLogger
+from datetime import datetime
+import socket
+from pynvml import *
+
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,7 +73,8 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Logging- Doing this before checking the dataset. Might update data_dict
     loggers = {'wandb': None}  # loggers dict
-    if rank in [-1, 0]:
+    arePrimaryMachine = rank in [-1, 0]
+    if arePrimaryMachine:
         opt.hyp = hyp  # add hyperparameters
         # BB: changed weights_only=False because the old defaults were changed from false to true, so we are reverting back to old default of False
         run_id = torch.load(weights, map_location=device, weights_only=False).get('wandb_id') if weights.endswith('.pt') and os.path.isfile(weights) else None
@@ -199,7 +207,7 @@ def train(hyp, opt, device, tb_writer=None):
     # plot_lr_scheduler(optimizer, scheduler, epochs)
 
     # EMA
-    ema = ModelEMA(model) if rank in [-1, 0] else None
+    ema = ModelEMA(model) if arePrimaryMachine else None
 
     # Resume
     start_epoch, best_fitness = 0, 0.0
@@ -253,7 +261,7 @@ def train(hyp, opt, device, tb_writer=None):
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
-    if rank in [-1, 0]:
+    if arePrimaryMachine:
         testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
@@ -308,13 +316,25 @@ def train(hyp, opt, device, tb_writer=None):
                 f'Logging results to {save_dir}\n'
                 f'Starting training for {epochs} epochs...')
     torch.save(model, wdir / 'init.pt')
+
+    profiling_logger = None
+    profilingWarmupIterations = 5
+    profileStepsSpecified = opt.profile_steps > 0
+    if arePrimaryMachine and profileStepsSpecified:
+        profiling_csv = save_dir / "profiling_iter.csv"
+        profiling_logger = CSVLogger(profiling_csv, ProfilingLogRow)
+        nvmlInit()
+
+
+    intrumentationIdx = 0
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
-            if rank in [-1, 0]:
+            if arePrimaryMachine:
                 cw = model.class_weights.cpu().numpy() * (1 - maps) ** 2 / nc  # class weights
                 iw = labels_to_image_weights(dataset.labels, nc=nc, class_weights=cw)  # image weights
                 dataset.indices = random.choices(range(dataset.n), weights=iw, k=dataset.n)  # rand weighted idx
@@ -334,12 +354,22 @@ def train(hyp, opt, device, tb_writer=None):
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
         logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
-        if rank in [-1, 0]:
+        if arePrimaryMachine:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        timer = StepTimer(enabled= arePrimaryMachine and profileStepsSpecified, device="cuda" if useCuda else "cpu")
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+			# measures "how long did dataloader+augmentation take since last iter"
+		    
+            timer.cpu_mark("iter_start")
+
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+		    # H2D (host->device) + normalize
+		    
+            timer.gpu_start("h2d")
+            imgs = imgs.to(device, non_blocking=True).float() / 255.0 # uint8 to float32, 0-255 to 0.0-1.0
+            targets = targets.to(device, non_blocking=True)
+            timer.gpu_end("h2d")
 
             # Warmup
             if ni <= nw:
@@ -362,7 +392,13 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with torch.amp.autocast('cuda' if useCuda else None):
+                timer.gpu_start("fwd")
                 pred = model(imgs)  # forward
+                timer.gpu_end("fwd")
+
+                timer.gpu_start("loss")
+                if(i > 5):
+                    pass
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
                 else:
@@ -371,20 +407,73 @@ def train(hyp, opt, device, tb_writer=None):
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.
+                timer.gpu_end("loss")
+    
 
             # Backward
+            timer.gpu_start("bwd")
             scaler.scale(loss).backward()
+            timer.gpu_end("bwd")
 
-            # Optimize
-            if ni % accumulate == 0:
+		    # Optimizer step (only when stepping)
+            do_step = (ni + 1) % accumulate == 0
+            if do_step:
+                timer.gpu_start("opt")
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
                 optimizer.zero_grad()
                 if ema:
                     ema.update(model)
+                timer.gpu_end("opt")
+            
+		    # print every N iters
+            if arePrimaryMachine and (i < opt.profile_steps):
+                data_ms = timer.cpu_elapsed_ms("iter_start")  # includes python overhead this iter
+                h2d_ms  = timer.gpu_elapsed_ms("h2d")
+                fwd_ms  = timer.gpu_elapsed_ms("fwd")
+                loss_ms = timer.gpu_elapsed_ms("loss")
+                bwd_ms  = timer.gpu_elapsed_ms("bwd")
+                opt_ms  = timer.gpu_elapsed_ms("opt") if do_step else 0.0
+
+
+                deviceIndex = opt.local_rank if opt.local_rank > -1 else 0
+                gpuHandle = nvmlDeviceGetHandleByIndex(deviceIndex) if useCuda else None
+                gpuUtilization = nvmlDeviceGetUtilizationRates(gpuHandle).gpu if useCuda else 0.0
+                gpuMemGB = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+                logRow = ProfilingLogRow(
+                        utc_time=datetime.utcnow().isoformat(timespec="milliseconds"),
+                        machine_name=socket.gethostname(),
+                        model_name=opt.cfg or Path(opt.weights).stem,
+                        workers=opt.workers,
+                        train_name=Path(opt.save_dir).name,
+                        img_y=imgs.shape[0],
+                        img_x=imgs.shape[1],
+                        batch_size=opt.batch_size,
+                        gpu_index=deviceIndex,
+                        gpu_name=torch.cuda.get_device_name(deviceIndex) if torch.cuda.is_available() else "cpu",
+                        epoch=epoch,
+                        iter=i,
+                        gpu_utilization=gpuUtilization,
+                        gpu_mem_gb=gpuMemGB,
+                        time_h2d_ms=h2d_ms,
+                        time_fwd_ms=fwd_ms,
+                        time_loss_ms=loss_ms,
+                        time_bwd_ms=bwd_ms,
+                        time_opt_ms=opt_ms,
+                    )
+
+
+
+                if(profiling_logger and i >= profilingWarmupIterations):
+                    profiling_logger.log(logRow)
+                
+                if(i % 50 == 0):
+                    logger.info(f"[timing] i={i} data+py={data_ms:.1f}ms | h2d={h2d_ms:.1f} fwd={fwd_ms:.1f} loss={loss_ms:.1f} "
+                            f"bwd={bwd_ms:.1f} opt={opt_ms:.1f}")
+
 
             # Print
-            if rank in [-1, 0]:
+            if arePrimaryMachine:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
@@ -410,7 +499,7 @@ def train(hyp, opt, device, tb_writer=None):
         scheduler.step()
 
         # DDP process 0 or single-GPU
-        if rank in [-1, 0]:
+        if arePrimaryMachine:
             # mAP
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
@@ -484,7 +573,7 @@ def train(hyp, opt, device, tb_writer=None):
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training
-    if rank in [-1, 0]:
+    if arePrimaryMachine:
         # Plots
         if plots:
             plot_results(save_dir=save_dir)  # save as results.png
@@ -525,6 +614,11 @@ def train(hyp, opt, device, tb_writer=None):
     else:
         dist.destroy_process_group()
     torch.cuda.empty_cache()
+
+
+    if profiling_logger is not None:
+        profiling_logger.close()
+
     return results
 
 
@@ -566,6 +660,7 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--profile_steps', type=int, default=0, help='Number of steps to profile for timing analysis')
     opt = parser.parse_args()
 
     # Set DDP variables

@@ -35,9 +35,10 @@ os.environ['NUMEXPR_MAX_THREADS'] = str(min(os.cpu_count(), 8))  # NumExpr max t
 
 
 def set_logging(rank=-1):
+    arePrimaryMachine = (rank in [-1, 0])
     logging.basicConfig(
         format="%(message)s",
-        level=logging.INFO if rank in [-1, 0] else logging.WARN)
+        level=logging.INFO if arePrimaryMachine else logging.WARN)
 
 
 def init_seeds(seed=0):
