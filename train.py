@@ -35,7 +35,7 @@ from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
-from utils.profiling import StepTimer, ProfilingLogRow, CSVLogger
+from utils.profiling import StepTimer, ProfilingLogRow, CSVLogger, TimedStageKeys
 from datetime import datetime
 import socket
 from pynvml import *
@@ -318,7 +318,7 @@ def train(hyp, opt, device, tb_writer=None):
     torch.save(model, wdir / 'init.pt')
 
     profiling_logger = None
-    profilingWarmupIterations = 5
+    profilingWarmupIterations = 0
     profileStepsSpecified = opt.profile_steps > 0
     if arePrimaryMachine and profileStepsSpecified:
         profiling_csv = save_dir / "profiling_iter.csv"
@@ -357,19 +357,18 @@ def train(hyp, opt, device, tb_writer=None):
         if arePrimaryMachine:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
-        timer = StepTimer(enabled= arePrimaryMachine and profileStepsSpecified, device="cuda" if useCuda else "cpu")
+        stepTimerEnabled = arePrimaryMachine and profileStepsSpecified
+        timer = StepTimer(enabled=stepTimerEnabled, device="cuda" if useCuda else "cpu")
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-			# measures "how long did dataloader+augmentation take since last iter"
-		    
-            timer.cpu_mark("iter_start")
-
+            timer.mark_iter_begin()  # computes dataloader wait since last iter, and marks ITER_BEGIN
+		
             ni = i + nb * epoch  # number integrated batches (since train start)
 		    # H2D (host->device) + normalize
-		    
-            timer.gpu_start("h2d")
+
+            timer.start(TimedStageKeys.H2D)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0 # uint8 to float32, 0-255 to 0.0-1.0
             targets = targets.to(device, non_blocking=True)
-            timer.gpu_end("h2d")
+            timer.end(TimedStageKeys.H2D)
 
             # Warmup
             if ni <= nw:
@@ -392,11 +391,11 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with torch.amp.autocast('cuda' if useCuda else None):
-                timer.gpu_start("fwd")
+                timer.start(TimedStageKeys.FWD)
                 pred = model(imgs)  # forward
-                timer.gpu_end("fwd")
+                timer.end(TimedStageKeys.FWD)
 
-                timer.gpu_start("loss")
+                timer.start(TimedStageKeys.LOSS)
                 if(i > 5):
                     pass
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
@@ -407,39 +406,45 @@ def train(hyp, opt, device, tb_writer=None):
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
                     loss *= 4.
-                timer.gpu_end("loss")
+                timer.end(TimedStageKeys.LOSS)
     
 
             # Backward
-            timer.gpu_start("bwd")
+            timer.start(TimedStageKeys.BWD)
             scaler.scale(loss).backward()
-            timer.gpu_end("bwd")
+            timer.end(TimedStageKeys.BWD)
 
 		    # Optimizer step (only when stepping)
             do_step = (ni + 1) % accumulate == 0
             if do_step:
-                timer.gpu_start("opt")
+                timer.start(TimedStageKeys.OPT)
                 scaler.step(optimizer)  # optimizer.step
                 scaler.update()
                 optimizer.zero_grad()
                 if ema:
                     ema.update(model)
-                timer.gpu_end("opt")
-            
+                timer.end(TimedStageKeys.OPT)
+
+
+            # Print
+            if arePrimaryMachine:
+                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
+                mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
+                s = ('%10s' * 2 + '%10.4g' * 6) % (
+                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+                pbar.set_description(s)
+
+            timer.mark_iter_end()
+
 		    # print every N iters
             if arePrimaryMachine and (i < opt.profile_steps):
-                data_ms = timer.cpu_elapsed_ms("iter_start")  # includes python overhead this iter
-                h2d_ms  = timer.gpu_elapsed_ms("h2d")
-                fwd_ms  = timer.gpu_elapsed_ms("fwd")
-                loss_ms = timer.gpu_elapsed_ms("loss")
-                bwd_ms  = timer.gpu_elapsed_ms("bwd")
-                opt_ms  = timer.gpu_elapsed_ms("opt") if do_step else 0.0
 
 
                 deviceIndex = opt.local_rank if opt.local_rank > -1 else 0
                 gpuHandle = nvmlDeviceGetHandleByIndex(deviceIndex) if useCuda else None
                 gpuUtilization = nvmlDeviceGetUtilizationRates(gpuHandle).gpu if useCuda else 0.0
                 gpuMemGB = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+                timing_kwargs = timer.to_profiling_kwargs(do_step=do_step, sync_cuda=True)
                 logRow = ProfilingLogRow(
                         utc_time=datetime.utcnow().isoformat(timespec="milliseconds"),
                         machine_name=socket.gethostname(),
@@ -455,31 +460,23 @@ def train(hyp, opt, device, tb_writer=None):
                         iter=i,
                         gpu_utilization=gpuUtilization,
                         gpu_mem_gb=gpuMemGB,
-                        time_h2d_ms=h2d_ms,
-                        time_fwd_ms=fwd_ms,
-                        time_loss_ms=loss_ms,
-                        time_bwd_ms=bwd_ms,
-                        time_opt_ms=opt_ms,
+                        **timing_kwargs
+                    )
+                if(profiling_logger and i >= profilingWarmupIterations):
+                    profiling_logger.log(logRow)
+
+                if(i % 50 == 0):
+                    logger.info(
+                        f"[timing] i={i} dataloader+aug={logRow.time_dataloader_ms:.1f}ms | "
+                        f"iter_cpu={logRow.time_iter_cpu_ms:.1f}ms | "
+                        f"h2d={timing_kwargs[TimedStageKeys.H2D]:.1f} fwd={timing_kwargs[TimedStageKeys.FWD]:.1f} "
+                        f"loss={timing_kwargs[TimedStageKeys.LOSS]:.1f} bwd={timing_kwargs[TimedStageKeys.BWD]:.1f} "
+                        f"opt={timing_kwargs[TimedStageKeys.OPT]:.1f}"
                     )
 
 
 
-                if(profiling_logger and i >= profilingWarmupIterations):
-                    profiling_logger.log(logRow)
-                
-                if(i % 50 == 0):
-                    logger.info(f"[timing] i={i} data+py={data_ms:.1f}ms | h2d={h2d_ms:.1f} fwd={fwd_ms:.1f} loss={loss_ms:.1f} "
-                            f"bwd={bwd_ms:.1f} opt={opt_ms:.1f}")
-
-
-            # Print
             if arePrimaryMachine:
-                mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
-                s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
-                pbar.set_description(s)
-
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
