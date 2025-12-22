@@ -8,11 +8,12 @@
 # val: ./coco/val2017.txt  # 5000 images
 # test: ./coco/test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
 
+# therm
+train: D:\videos\DL\Training\2025\Therm20251104\trainsubset.txt
+val: D:\videos\DL\Training\2025\Therm20251104\valsubset.txt
+test: D:\videos\DL\Training\2025\Therm20251104\testsubset.txt
 
-train: /dldata/Videos/DL/Training/2025/Therm20251104/trainSubset.txt
-val: /dldata/Videos/DL/Training/2025/Therm20251104/valSubset.txt
-test: /dldata/Videos/DL/Training/2025/Therm20251104/testSubset.txt
-
+# vis
 # train: D:\videos\DL\Training\2025\Vis20251105_pts04\trainsubset.txt
 # val: D:\videos\DL\Training\2025\Vis20251105_pts04\valsubset.txt
 # test: D:\videos\DL\Training\2025\Vis20251105_pts04\testsubset.txt

@@ -22,7 +22,7 @@ from utils.google_utils import gsutil_getsize
 from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
 
-from utils.win_lin_data import generate_linux_paths_file_from_win_paths_file
+from utils.win_lin_data import generate_linux_paths_file_from_win_paths_file, is_linux_paths_file
 from utils.win_lin_data import get_win_paths_file_from_lin_paths_file
 
 
@@ -169,7 +169,10 @@ def check_dataset(dict):
         allDataFilesExist = all(dPath.exists() for dPath in val)
         if not allDataFilesExist:
             for dp in dataFilePaths:
-                generate_linux_paths_file_from_win_paths_file(get_win_paths_file_from_lin_paths_file(dp))
+                if is_linux_paths_file(dp):
+                    generate_linux_paths_file_from_win_paths_file(get_win_paths_file_from_lin_paths_file(dp))
+                else:
+                    raise FileNotFoundError(f"Data file path not found: {dp}")
 
         allDataFilesExist = all(dPath.exists() for dPath in val)
         if not allDataFilesExist:
